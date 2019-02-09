@@ -1,5 +1,12 @@
 #include <Servo.h>
 #include <EEPROM.h>
+#include <SoftwareSerial.h>
+
+//#define ENABLE_SHIFT_BUTTONS
+
+#define BLUETOOTH_RX_PIN 11
+#define BLUETOOTH_TX_PIN 10
+#define BLE_SERIAL_SPEED 57600
 
 /* How many shift register chips are daisy-chained.
 */
@@ -16,27 +23,57 @@
 /* Optional delay between shift register reads.
 */
 #define POLL_DELAY_MSEC 1
+
+#if defined(ENABLE_SHIFT_BUTTONS)
+
 unsigned long lastPinsReadTime;
 
-int ploadPin = 15;  // Connects to Parallel load pin the 165
-int clockEnablePin = 17;  // Connects to Clock Enable pin the 165
-int dataPin = 16; // Connects to the Q7 pin the 165
-int clockPin = 14; // Connects to the Clock pin the 165
+#define SHIFT_PLOAD_PIN 15
+#define SHIFT_CLOCK_EN_PIN 17
+#define SHIFT_DATA_PIN 16
+#define SHIFT_CLOCK_PIN 14
 
 bool pinValuesArr[DATA_WIDTH];
 bool oldPinValuesArr[DATA_WIDTH];
+
+#endif
 
 String robotName = "Q1 mini"; // Robot name
 
 const int enableCalibration = true; // Enable calibration button
 
-const int numberOfServos = 8; // Number of servos
+#define NUMBER_OF_SERVOS 8
 const int numberOfACE = 9; // Number of action code elements
-const int buzzerPin = 14; // Robot shield onboard buzzer pin
 int servoCal[] = { 0, 0, 0, 0, 0, 0, 0, 0 }; // Servo calibration data
 int servoPos[] = { 0, 0, 0, 0, 0, 0, 0, 0 }; // Servo current position
-int servoPrgPeriod = 20; // 20 ms
-Servo servo[numberOfServos]; // Servo object
+#define SERVO_PRG_PERIOD 20
+Servo servo[NUMBER_OF_SERVOS]; // Servo object
+
+//const enum RemoteRobotCommand {
+//  Zero = 0,
+//  Standby = 1,
+//  Forward = 2,
+//  Backward = 3,
+//  Move_left = 4,
+//  Move_right = 5,
+//  Turn_left = 6,
+//  Turn_right = 7,
+//  Lie = 8,
+//  Say_hi = 10,
+//  Fighting = 11,
+//  Push_up = 12,
+//  Sleep = 13,
+//  Dancing1 = 14,
+//  Dancing2 = 15,
+//  Dancing3 = 16
+//};
+
+bool _foundCalibrationSymbol = false;
+bool _foundStartingSymbol = false;
+int _lastReadCommand;
+String _readCommandData = "";
+
+SoftwareSerial _bluetoothSerial(BLUETOOTH_TX_PIN, BLUETOOTH_RX_PIN);
 
 // Action code
 // --------------------------------------------------------------------------------
@@ -271,15 +308,16 @@ void setup()
 
 	Serial.begin(9600);
 
+#if defined(ENABLE_SHIFT_BUTTONS)
 	/* Initialize our digital pins...
 	*/
-	pinMode(ploadPin, OUTPUT);
-	pinMode(clockEnablePin, OUTPUT);
-	pinMode(clockPin, OUTPUT);
-	pinMode(dataPin, INPUT);
+	pinMode(SHIFT_PLOAD_PIN, OUTPUT);
+	pinMode(SHIFT_CLOCK_EN_PIN, OUTPUT);
+	pinMode(SHIFT_CLOCK_PIN, OUTPUT);
+	pinMode(SHIFT_DATA_PIN, INPUT);
 
-	digitalWrite(clockPin, LOW);
-	digitalWrite(ploadPin, HIGH);
+	digitalWrite(SHIFT_CLOCK_PIN, LOW);
+	digitalWrite(SHIFT_PLOAD_PIN, HIGH);
 
 	/* Read in and display the pin states at startup.
 	*/
@@ -287,9 +325,11 @@ void setup()
 	read_shift_regs(pinValuesArr);
 	display_pin_values();
 	copyToArray(pinValuesArr, oldPinValuesArr, DATA_WIDTH);
+#endif
 
-
-	//getServoCal(); // Get servoCal from EEPROM
+	_bluetoothSerial.begin(BLE_SERIAL_SPEED);
+	getServoCal(); // Get servoCal from EEPROM
+  printArray(servoCal, NUMBER_OF_SERVOS);
 
 	// Servo Pin Set
 	servo[0].attach(2);
@@ -306,6 +346,9 @@ void setup()
 
 void loop()
 {
+	processBluetoothInput();
+
+#if defined(ENABLE_SHIFT_BUTTONS)
 	if (millis() - lastPinsReadTime > POLL_DELAY_MSEC)
 	{
 		read_shift_regs(pinValuesArr);
@@ -313,66 +356,77 @@ void loop()
 		if (compareArrays(pinValuesArr, oldPinValuesArr, DATA_WIDTH) == false)
 		{
 			Serial.print("*Pin value change detected*\r\n");
-      printArray(pinValuesArr, DATA_WIDTH);
+			printArray(pinValuesArr, DATA_WIDTH);
 			display_pin_values();
 			copyToArray(pinValuesArr, oldPinValuesArr, DATA_WIDTH);
-      activateCommandByIndex(getFirstActiveButtonIndex(pinValuesArr, DATA_WIDTH));
+			activateCommandByIndex(getFirstActiveButtonIndex(pinValuesArr, DATA_WIDTH));
 		}
 		lastPinsReadTime = millis();
 	}
- Serial.println("-");
+#endif
+	//Serial.println("-");
 }
 
 // Robot functions functions
 // --------------------------------------------------------------------------------
+
+#if defined(ENABLE_SHIFT_BUTTONS)
 
 void activateCommandByIndex(int buttonIndex)
 {
 	Serial.println("Executing index: " + (String)buttonIndex);
 	switch (buttonIndex)
 	{
-		case 0:
-		{
-			runServoPrg(servoPrg03, servoPrg03step);
-      break;
-		}
-		case 1:
-		{
-			runServoPrg(servoPrg06, servoPrg06step);
-      break;
-		}
-		case 2:
-		{
-			runServoPrg(servoPrg07, servoPrg07step);
-      break;
-		}
-		case 3:
-		{
-			runServoPrg(servoPrg02, servoPrg02step);
-      break;
-		}
-		case 4:
-		{
-			runServoPrg(servoPrg00, servoPrg00step);
-      break;
-		}
-		case 5:
-		{
-			runServoPrg(servoPrg11, servoPrg11step);
-      break;
-		}
-		case 6:
-		{
-			runServoPrg(servoPrg13, servoPrg13step);
-      break;
-		}
-		case 7:
-		{
-			runServoPrg(servoPrg08, servoPrg08step);
-      break;
-		}
-		default:
-			break;
+	case 0:
+	{
+		//Backward
+		runServoPrg(servoPrg03, servoPrg03step);
+		break;
+	}
+	case 1:
+	{
+		//Turn left
+		runServoPrg(servoPrg06, servoPrg06step);
+		break;
+	}
+	case 2:
+	{
+		//Turn right
+		runServoPrg(servoPrg07, servoPrg07step);
+		break;
+	}
+	case 3:
+	{
+		//Forward
+		runServoPrg(servoPrg02, servoPrg02step);
+		break;
+	}
+	case 4:
+	{
+		//Zero
+		runServoPrg(servoPrg00, servoPrg00step);
+		break;
+	}
+	case 5:
+	{
+		//Push up
+		runServoPrg(servoPrg11, servoPrg11step);
+		break;
+	}
+	case 6:
+	{
+		//Dancing 1
+		runServoPrg(servoPrg13, servoPrg13step);
+		break;
+	}
+	case 7:
+	{
+		//Lie
+		runServoPrg(servoPrg08, servoPrg08step);
+		break;
+	}
+	default:
+		break;
 	}
 }
 
@@ -383,7 +437,169 @@ int getFirstActiveButtonIndex(bool pinValuesData[], int arrLength)
 		if (pinValuesData[counter] == false)
 			return counter;
 	}
-  return -1;
+	return -1;
+}
+
+#endif
+
+void processBluetoothInput()
+{
+	while (_bluetoothSerial.available())
+	{
+		char currentInput = _bluetoothSerial.read();
+
+		if (_foundCalibrationSymbol == false && currentInput == '[')
+		{
+			_foundCalibrationSymbol = true;
+		}
+		else if (_foundCalibrationSymbol == true && currentInput == ']')
+		{
+			parseAndSetCalibration(_readCommandData);
+			_foundCalibrationSymbol = false;
+			_readCommandData = "";
+		}
+		else if (_foundCalibrationSymbol == true)
+		{
+			_readCommandData += currentInput;
+		}
+		else if (_foundStartingSymbol == false && currentInput == '<')
+		{
+			_foundStartingSymbol = true;
+		}
+		else if (_foundStartingSymbol == true && currentInput == '>')
+		{
+			_lastReadCommand = _readCommandData.toInt();			
+			_foundStartingSymbol = false;
+			_readCommandData = "";
+			executeCommand(_lastReadCommand);
+		}
+		else if (_foundStartingSymbol == true)
+		{
+			_readCommandData += currentInput;
+		}
+	}
+}
+
+void parseAndSetCalibration(String calibrationData)
+{
+  //Serial.println(calibrationData);
+  char calDataArr[calibrationData.length() + 1];
+  calibrationData.toCharArray(calDataArr, calibrationData.length() + 1);
+	int calibrationDataLocal[2] = {0,0};
+	int tempCalibrationIndex = 0;
+	String tempNumber = "";
+	for (int counter = 0; counter < calibrationData.length(); counter++)
+	{
+		if (calDataArr[counter] == ':')
+		{
+      //Serial.println(":");
+			calibrationDataLocal[tempCalibrationIndex] = tempNumber.toInt();
+			tempNumber = "";
+			tempCalibrationIndex++;
+		}
+		else
+		{
+      //Serial.println(tempNumber);
+			tempNumber += calDataArr[counter];
+		}
+   //Serial.println("ARR: " + (String)calDataArr[counter]);
+	}
+  calibrationDataLocal[tempCalibrationIndex] = tempNumber.toInt();
+  //Serial.println("CAL " + (String)calibrationDataLocal[0] + " " + (String)calibrationDataLocal[1]);
+  
+	servoCal[calibrationDataLocal[0]] = calibrationDataLocal[1];
+	putServoCal();
+	runServoPrg(servoPrg01, servoPrg01step); //standby	
+}
+
+void executeCommand(int command)
+{
+  Serial.println(command);
+	switch (command)
+	{
+	case 0: //Backward:
+	{
+		runServoPrg(servoPrg03, servoPrg03step);
+		break;
+	}
+	case 1: //Turn_left:
+	{
+		runServoPrg(servoPrg06, servoPrg06step);
+		break;
+	}
+	case 2: //Turn_right:
+	{
+		runServoPrg(servoPrg07, servoPrg07step);
+		break;
+	}
+	case 3: //Forward:
+	{
+		runServoPrg(servoPrg02, servoPrg02step);
+		break;
+	}
+	case 4: //Zero:
+	{
+		runServoPrg(servoPrg00, servoPrg00step);
+		break;
+	}
+//	case 5: //Push_up:
+//	{
+//		runServoPrg(servoPrg11, servoPrg11step);
+//		break;
+//	}
+//	case 6: //Dancing1:
+//	{
+//		runServoPrg(servoPrg13, servoPrg13step);
+//		break;
+//	}
+	case 7: //Lie:
+	{
+		runServoPrg(servoPrg08, servoPrg08step);
+		break;
+	}
+//	case 8: //Dancing2:
+//	{
+//		runServoPrg(servoPrg14, servoPrg14step);
+//		break;
+//	}
+//	case 9: //Dancing3:
+//	{
+//		runServoPrg(servoPrg15, servoPrg15step);
+//		break;
+//	}
+	case 10: //Sleep:
+	{
+		runServoPrg(servoPrg12, servoPrg12step);
+		break;
+	}
+//	case 11: //Fighting:
+//	{
+//		runServoPrg(servoPrg10, servoPrg10step);
+//		break;
+//	}
+	case 12: //Say_hi:
+	{
+		runServoPrg(servoPrg09, servoPrg09step);
+		break;
+	}
+	case 13: //Move_left:
+	{
+		runServoPrg(servoPrg04, servoPrg04step);
+		break;
+	}
+	case 14: //Move_right:
+	{
+		runServoPrg(servoPrg05, servoPrg05step);
+		break;
+	}
+	case 15: //Standby:
+	{
+		runServoPrg(servoPrg01, servoPrg01step);
+		break;
+	}
+	default:
+		break;
+	}
 }
 
 // EEPROM Clear (For debug only)
@@ -399,7 +615,7 @@ void eepromClear()
 void getServoCal()
 {
 	int eeAddress = 0;
-	for (int i = 0; i < numberOfServos; i++) {
+	for (int i = 0; i < NUMBER_OF_SERVOS; i++) {
 		EEPROM.get(eeAddress, servoCal[i]);
 		eeAddress += sizeof(servoCal[i]);
 	}
@@ -409,7 +625,7 @@ void getServoCal()
 void putServoCal()
 {
 	int eeAddress = 0;
-	for (int i = 0; i < numberOfServos; i++) {
+	for (int i = 0; i < NUMBER_OF_SERVOS; i++) {
 		EEPROM.put(eeAddress, servoCal[i]);
 		eeAddress += sizeof(servoCal[i]);
 	}
@@ -418,7 +634,7 @@ void putServoCal()
 // Clear Servo calibration data
 void clearCal()
 {
-	for (int i = 0; i < numberOfServos; i++) {
+	for (int i = 0; i < NUMBER_OF_SERVOS; i++) {
 		servoCal[i] = 0;
 	}
 	putServoCal(); // Put servoCal to EEPROM
@@ -439,23 +655,25 @@ void runServoPrg(const int servoPrg[][numberOfACE], int step)
 	for (int i = 0; i < step; i++) { // Loop for step
 
 		int totalTime = servoPrg[i][numberOfACE - 1]; // Total time of this step
-    Serial.println("Total time: " + (String)totalTime);
-    
+		Serial.println("Total time: " + (String)totalTime);
+
 		// Get servo start position
-		for (int s = 0; s < numberOfServos; s++) {
+		for (int s = 0; s < NUMBER_OF_SERVOS; s++) {
 			servoPos[s] = servo[s].read() - servoCal[s];
 		}
 
-		for (int j = 0; j < totalTime / servoPrgPeriod; j++) { // Loop for time section
-			for (int k = 0; k < numberOfServos; k++) { // Loop for servo
-				servo[k].write((map(j, 0, totalTime / servoPrgPeriod, servoPos[k], servoPrg[i][k])) + servoCal[k]);
+		for (int j = 0; j < totalTime / SERVO_PRG_PERIOD; j++) { // Loop for time section
+			for (int k = 0; k < NUMBER_OF_SERVOS; k++) { // Loop for servo
+				servo[k].write((map(j, 0, totalTime / SERVO_PRG_PERIOD, servoPos[k], servoPrg[i][k])) + servoCal[k]);
 			}
-			delay(servoPrgPeriod);
+			delay(SERVO_PRG_PERIOD);
 		}
-    Serial.println("Run servo loop: " + (String)i);
+		Serial.println("Run servo loop: " + (String)i);
 	}
- Serial.println("Run servo loop end");
+	Serial.println("Run servo loop end");
 }
+
+#if defined(ENABLE_SHIFT_BUTTONS)
 
 // Buttons functions
 // --------------------------------------------------------------------------------
@@ -467,24 +685,24 @@ void read_shift_regs(bool* output)
 
 	/* Trigger a parallel Load to latch the state of the data lines,
 	*/
-	digitalWrite(clockEnablePin, HIGH);
-	digitalWrite(ploadPin, LOW);
+	digitalWrite(SHIFT_CLOCK_EN_PIN, HIGH);
+	digitalWrite(SHIFT_PLOAD_PIN, LOW);
 	delayMicroseconds(PULSE_WIDTH_USEC);
-	digitalWrite(ploadPin, HIGH);
-	digitalWrite(clockEnablePin, LOW);
+	digitalWrite(SHIFT_PLOAD_PIN, HIGH);
+	digitalWrite(SHIFT_CLOCK_EN_PIN, LOW);
 
 	/* Loop to read each bit value from the serial out line
 	 * of the SN74HC165N.
 	*/
 	for (int i = 0; i < DATA_WIDTH; i++)
 	{
-		bitVal = digitalRead(dataPin);
+		bitVal = digitalRead(SHIFT_DATA_PIN);
 
 		newPinValues[i] = (bool)bitVal;
 
-		digitalWrite(clockPin, HIGH);
+		digitalWrite(SHIFT_CLOCK_PIN, HIGH);
 		delayMicroseconds(PULSE_WIDTH_USEC);
-		digitalWrite(clockPin, LOW);
+		digitalWrite(SHIFT_CLOCK_PIN, LOW);
 	}
 	copyToArray(newPinValues, output, DATA_WIDTH);
 }
@@ -511,6 +729,8 @@ void display_pin_values()
 
 	Serial.print("\r\n");
 }
+
+#endif
 
 bool compareArrays(bool first[], bool second[], int arrLength)
 {
@@ -540,5 +760,17 @@ void printArray(bool input[], int arrLength)
 	}
 	Serial.println();
 }
+
+void printArray(int input[], int arrLength)
+{
+  for (int counter = 0; counter < arrLength; counter++)
+  {
+    Serial.print(input[counter]);
+    Serial.print(" ");
+  }
+  Serial.println();
+}
+
+
 
 
