@@ -1,3 +1,4 @@
+#include <OneButton.h>
 #include <Servo.h>
 #include <EEPROM.h>
 #include <SoftwareSerial.h>
@@ -301,6 +302,14 @@ const int servoPrg15[][numberOfACE] = {
 
 // --------------------------------------------------------------------------------
 
+int _displayLoop[] = { 3,3,3,12,4,0,0,0,4 };
+bool _executeDisplayLoop = false;
+#define DISPLAY_LOOP_DELAY_MILLIS 1500
+#define DISPLAY_LOOP_MAX_INDEX 8
+unsigned long _currentDisplayLoopTime;
+int _currentDisplayLoopIndex;
+#define DISPLAY_BUTTON_PIN 17
+OneButton _displayButton(DISPLAY_BUTTON_PIN, true);
 
 void setup()
 {
@@ -327,9 +336,12 @@ void setup()
 	copyToArray(pinValuesArr, oldPinValuesArr, DATA_WIDTH);
 #endif
 
+	_displayButton.attachClick(displayButtonClick);
+	_currentDisplayLoopTime = millis();
+
 	_bluetoothSerial.begin(BLE_SERIAL_SPEED);
 	getServoCal(); // Get servoCal from EEPROM
-  printArray(servoCal, NUMBER_OF_SERVOS);
+	printArray(servoCal, NUMBER_OF_SERVOS);
 
 	// Servo Pin Set
 	servo[0].attach(2);
@@ -346,7 +358,24 @@ void setup()
 
 void loop()
 {
-	processBluetoothInput();
+	_displayButton.tick();
+	if (_executeDisplayLoop == true)
+	{
+		if (millis() - _currentDisplayLoopTime > DISPLAY_LOOP_DELAY_MILLIS)
+		{
+			if (_currentDisplayLoopIndex > DISPLAY_LOOP_MAX_INDEX)
+			{
+				_currentDisplayLoopIndex = 0;
+			}
+			executeCommand(_displayLoop[_currentDisplayLoopIndex]);
+			_currentDisplayLoopIndex++;
+			_currentDisplayLoopTime = millis();
+		}
+	}
+	else
+	{
+		processBluetoothInput();
+	}
 
 #if defined(ENABLE_SHIFT_BUTTONS)
 	if (millis() - lastPinsReadTime > POLL_DELAY_MSEC)
@@ -365,6 +394,12 @@ void loop()
 	}
 #endif
 	//Serial.println("-");
+}
+
+void displayButtonClick()
+{
+	Serial.println("Display button click.");
+	_executeDisplayLoop = !_executeDisplayLoop;
 }
 
 // Robot functions functions
@@ -653,6 +688,7 @@ void calibration(int i, int change)
 void runServoPrg(const int servoPrg[][numberOfACE], int step)
 {
 	for (int i = 0; i < step; i++) { // Loop for step
+		_displayButton.tick();
 
 		int totalTime = servoPrg[i][numberOfACE - 1]; // Total time of this step
 		Serial.println("Total time: " + (String)totalTime);
